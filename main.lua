@@ -8,7 +8,7 @@ local T_CURSOR_AREA = 1073741853 -- 光标检测区域
 local T_IMAGE       = 1073741869 -- 普通图片
 local T_VIDEO_PIXEL = 1073741846 -- 视频像素方块
 local T_PLAY_BTN    = 1073741851 -- 预设按钮
-local ASSET_WHITE   = 100001     -- 纯白图片资产
+local ASSET_WHITE   = 100001     -- 纯白正方形图片
 
 local TARGET_FPS = 12
 local function isReady(c) return c ~= nil and c.alive end
