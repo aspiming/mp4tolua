@@ -218,6 +218,10 @@ function OnInit() script:EnableUpdate(true) end
 
 function OnStart()
     this:SetActive(true); this:SetVisible(true)
+    
+    -- 【就在这里】强制显示鼠标光标
+    this.showCursor = true 
+    
     local ok, err = pcall(BuildPlayer)
     if ok then RenderFrame(1) else printerr("错误: " .. tostring(err)) end
 end
