@@ -2,15 +2,16 @@ local data = require("GridData")
 local this = script.object
 
 -- =====================================================================
--- 🚨 【已填入你的所有专属 ID】
+-- 🚨 【填入模版索引】
 -- =====================================================================
 local T_CURSOR_AREA = 1073741853 -- 光标检测区域
 local T_IMAGE       = 1073741869 -- 普通图片
 local T_VIDEO_PIXEL = 1073741846 -- 视频像素方块
 local T_TEXTBOX     = 1073741867 -- 文本框
-local ASSET_WHITE   = 100001     -- 纯白正方形资产
-local ASSET_TRIANGLE= 100003     -- 三角形资产
-local ASSET_ROUND   = 106007     -- 小圆资产（滑块）
+
+local ASSET_WHITE   = 100001     -- 纯白正方形
+local ASSET_TRIANGLE= 100003     -- 三角形
+local ASSET_ROUND   = 106007     -- 小圆
 
 local TARGET_FPS = data.fps or 12
 local function isReady(c) return c ~= nil and c.alive end
@@ -130,7 +131,7 @@ local function UpdateBtnVisuals()
 end
 
 -- =====================================================================
--- 🚨 核心新增：左上角“结算关卡”按钮
+-- 左上角“结算关卡”按钮
 -- =====================================================================
 local function BuildExitButton(parent)
     local w, h = 120, 40
