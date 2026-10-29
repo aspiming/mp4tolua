@@ -2,29 +2,33 @@ local data = require("GridData")
 local this = script.object
 
 -- =====================================================================
--- 🚨 【请确保你的模板 ID 在此处填写正确】
+-- 🚨 【已填入你的所有专属 ID】
 -- =====================================================================
 local T_CURSOR_AREA = 1073741853 -- 光标检测区域
 local T_IMAGE       = 1073741869 -- 普通图片
 local T_VIDEO_PIXEL = 1073741846 -- 视频像素方块
-local T_PLAY_BTN    = 1073741851 -- 预设按钮
-local ASSET_WHITE   = 100001     -- 纯白正方形图片
+local T_TEXTBOX     = 1073741867 -- 文本框
+local ASSET_WHITE   = 100001     -- 纯白正方形资产
+local ASSET_TRIANGLE= 100003     -- 三角形资产
+local ASSET_ROUND   = 106007     -- 小圆资产（滑块）
 
-local TARGET_FPS = 12
+local TARGET_FPS = data.fps or 12
 local function isReady(c) return c ~= nil and c.alive end
 
-local function makeImage(parent, w, h, color, name)
+-- 工具函数：生成图片控件
+local function makeImage(parent, w, h, color, name, assetId)
     local c = game.InstantiateClientUIControl(T_IMAGE, parent)
     if not isReady(c) then return nil end
     c:SetActive(true); c:SetVisible(true)
     c:SetSizeDelta(w, h)
-    c:SetImage(Enum.ImageSource.StaticReference, ASSET_WHITE)
+    c:SetImage(Enum.ImageSource.StaticReference, assetId or ASSET_WHITE)
     c.imageType = Enum.ImageType.Stretch
     c.imageColor = color
     if name then c.name = name end
     return c
 end
 
+-- 工具函数：获取绝对坐标
 local function getAbsolutePos(ctrl)
     local x, y = 0, 0
     while ctrl and isReady(ctrl) do
@@ -35,6 +39,9 @@ local function getAbsolutePos(ctrl)
     return x, y
 end
 
+-- =====================================================================
+-- 运行时状态
+-- =====================================================================
 local Runtime = {
     isPlaying = true,
     currentFrame = 1,
@@ -42,16 +49,23 @@ local Runtime = {
     frameDuration = 1 / TARGET_FPS,
     lastTime = 0,
     videoControls = {},
-    barFill = nil,
+    
+    playBtnBg = nil,
+    playIconRoot = nil,
+    pauseIconRoot = nil,
+    isBtnHover = false,
+    isBtnPress = false,
+    
+    thumb = nil,
     barArea = nil,
-    playBtn = nil,
-    btnChildrenOrigPos = {}, 
-    btnImages = {},          
+    barW = 400,
+    
     pixelSize = 1,
     actualVideoW = 1,
     actualVideoH = 1
 }
 
+-- 视频渲染逻辑
 local function RenderFrame(frameIdx)
     local rects = data.frames[frameIdx]
     if not rects then return end
@@ -73,20 +87,119 @@ local function RenderFrame(frameIdx)
     end
 end
 
-local function HandleProgressClick(e, barW)
+-- 进度条逻辑
+local function UpdateProgressBar()
+    if not isReady(Runtime.thumb) then return end
+    local percent = (Runtime.currentFrame - 1) / (data.total_frames - 1)
+    percent = math.max(0, math.min(1, percent))
+    local startX = -Runtime.barW / 2
+    local currentX = startX + (Runtime.barW * percent)
+    local _, y = Runtime.thumb:GetAnchoredPosition()
+    Runtime.thumb:SetAnchoredPosition(currentX, y)
+end
+
+local function HandleProgressClick(e)
     local px = e:GetUIPos()
-    local canvasW_ = game.GetUICanvasSize()
+    local canvasW = game.GetUICanvasSize()
     local absX, _ = getAbsolutePos(Runtime.barArea)
-    local realCenterX = canvasW_ / 2 + absX
-    local realLeftX = realCenterX - barW / 2
-    local percent = math.max(0, math.min(1, (px - realLeftX) / barW))
+    local realCenterX = canvasW / 2 + absX
+    local realLeftX = realCenterX - Runtime.barW / 2
+    local percent = math.max(0, math.min(1, (px - realLeftX) / Runtime.barW))
     
     Runtime.currentFrame = math.floor(percent * (data.total_frames - 1)) + 1
     Runtime.frameTimer = 0
-    if isReady(Runtime.barFill) then Runtime.barFill.fillAmount = percent end
     RenderFrame(Runtime.currentFrame)
+    UpdateProgressBar()
 end
 
+-- 播放按钮视觉逻辑
+local function UpdateBtnVisuals()
+    if not isReady(Runtime.playBtnBg) then return end
+    if Runtime.isBtnPress then
+        Runtime.playBtnBg.imageColor = Color(60, 80, 100, 255)
+    elseif Runtime.isBtnHover then
+        Runtime.playBtnBg.imageColor = Color(110, 140, 160, 255)
+    else
+        Runtime.playBtnBg.imageColor = Color(90, 120, 140, 255)
+    end
+    local offsetY = Runtime.isBtnPress and -2 or 0
+    if isReady(Runtime.playIconRoot) then Runtime.playIconRoot:SetAnchoredPosition(0, offsetY) end
+    if isReady(Runtime.pauseIconRoot) then Runtime.pauseIconRoot:SetAnchoredPosition(0, offsetY) end
+    if isReady(Runtime.pauseIconRoot) then Runtime.pauseIconRoot:SetVisible(Runtime.isPlaying) end
+    if isReady(Runtime.playIconRoot) then Runtime.playIconRoot:SetVisible(not Runtime.isPlaying) end
+end
+
+-- =====================================================================
+-- 🚨 核心新增：左上角“结算关卡”按钮
+-- =====================================================================
+local function BuildExitButton(parent)
+    local w, h = 120, 40
+    
+    -- 1. 光标检测区作为按钮外壳
+    local btnArea = game.InstantiateClientUIControl(T_CURSOR_AREA, parent)
+    if not isReady(btnArea) then return end
+    btnArea:SetActive(true); btnArea:SetVisible(true)
+    
+    -- 锚点设为左上角 (0, 1)
+    btnArea:SetAnchorMin(0, 1)
+    btnArea:SetAnchorMax(0, 1)
+    btnArea:SetPivot(0, 1) 
+    btnArea:SetAnchoredPosition(20, -20) -- 距离屏幕左边 20，上边 -20
+    btnArea:SetSizeDelta(w, h)
+    btnArea.raycastTarget = true
+
+    -- 2. 红色背景
+    local bg = makeImage(btnArea, w, h, Color(200, 50, 50, 255), "ExitBtnBg")
+    
+    -- 3. 按钮文本
+    local textCtrl = game.InstantiateClientUIControl(T_TEXTBOX, btnArea)
+    if isReady(textCtrl) then
+        textCtrl:SetActive(true); textCtrl:SetVisible(true)
+        textCtrl:SetAnchorMin(0.5, 0.5); textCtrl:SetAnchorMax(0.5, 0.5); textCtrl:SetPivot(0.5, 0.5)
+        textCtrl:SetSizeDelta(w, h)
+        textCtrl:SetAnchoredPosition(0, 0)
+        textCtrl.text = "结算关卡"
+        textCtrl.fontSize = 18
+        textCtrl.fontColor = Color(255, 255, 255, 255)
+        textCtrl.horizontalAlignment = Enum.TextHorizontalAlignment.Middle
+        textCtrl.verticalAlignment = Enum.TextVerticalAlignment.Middle
+    end
+
+    -- 4. 悬停与按压反馈
+    local isHover, isPress = false, false
+    local function updateVisual()
+        if not isReady(bg) then return end
+        if isPress then
+            bg.imageColor = Color(150, 30, 30, 255)
+            btnArea:SetAnchoredPosition(20, -22) -- 模拟按下下沉 2 像素
+        elseif isHover then
+            bg.imageColor = Color(230, 80, 80, 255)
+            btnArea:SetAnchoredPosition(20, -20)
+        else
+            bg.imageColor = Color(200, 50, 50, 255)
+            btnArea:SetAnchoredPosition(20, -20)
+        end
+    end
+
+    btnArea:AddCursorEventListener(Enum.CursorEventType.CursorEnter, function(_) isHover = true; updateVisual() end)
+    btnArea:AddCursorEventListener(Enum.CursorEventType.CursorExit, function(_) isHover = false; isPress = false; updateVisual() end)
+    btnArea:AddCursorEventListener(Enum.CursorEventType.CursorDown, function(_) isPress = true; updateVisual() end)
+    btnArea:AddCursorEventListener(Enum.CursorEventType.CursorUp, function(_) isPress = false; updateVisual() end)
+    
+    -- 5. 点击发送服务端信号！
+    btnArea:AddCursorEventListener(Enum.CursorEventType.CursorClick, function(_)
+        -- 发送 game_close 信号
+        local signal = game.ServerSignal("game_close")
+        if signal then
+            signal:SendSignal()
+        end
+        print("✅ 已发送 game_close 信号，请求结算关卡")
+    end)
+end
+
+-- =====================================================================
+-- 构建播放器
+-- =====================================================================
 local function BuildPlayer()
     local canvasW, canvasH = game.GetUICanvasSize()
     
@@ -99,35 +212,32 @@ local function BuildPlayer()
     end
 
     -- 计算画面尺寸
-    local maxW, maxH = canvasW * 0.85, canvasH * 0.85
+    local maxW, maxH = canvasW * 0.85, canvasH * 0.75
     local videoRatio = data.width / data.height
     local winW = maxW
-    local winH = winW / videoRatio + 80
+    local winH = winW / videoRatio
     if winH > maxH then
         winH = maxH
-        winW = (winH - 80) * videoRatio
+        winW = winH * videoRatio
     end
     Runtime.pixelSize = math.floor(winW / data.width)
     Runtime.actualVideoW = data.width * Runtime.pixelSize
     Runtime.actualVideoH = data.height * Runtime.pixelSize
 
     local playerArea = game.InstantiateClientUIControl(T_CURSOR_AREA, this)
-    if isReady(playerArea) then
-        playerArea:SetActive(true); playerArea:SetVisible(true)
-        playerArea:SetAnchorMin(0.5, 0.5); playerArea:SetAnchorMax(0.5, 0.5); playerArea:SetPivot(0.5, 0.5)
-        playerArea:SetSizeDelta(winW, winH)
-        playerArea:SetAnchoredPosition(0, 0)
-        playerArea.raycastTarget = false
-    end
+    playerArea:SetActive(true); playerArea:SetVisible(true)
+    playerArea:SetAnchorMin(0.5, 0.5); playerArea:SetAnchorMax(0.5, 0.5); playerArea:SetPivot(0.5, 0.5)
+    playerArea:SetSizeDelta(Runtime.actualVideoW, Runtime.actualVideoH)
+    playerArea:SetAnchoredPosition(0, 40) 
+    playerArea.raycastTarget = false
 
+    -- 视频渲染区
     local videoRoot = game.InstantiateClientUIControl(T_CURSOR_AREA, playerArea)
-    if isReady(videoRoot) then
-        videoRoot:SetActive(true); videoRoot:SetVisible(true)
-        videoRoot:SetAnchorMin(0.5, 0.5); videoRoot:SetAnchorMax(0.5, 0.5); videoRoot:SetPivot(0.5, 0.5)
-        videoRoot:SetSizeDelta(Runtime.actualVideoW, Runtime.actualVideoH)
-        videoRoot:SetAnchoredPosition(0, 40) 
-        videoRoot.raycastTarget = false
-    end
+    videoRoot:SetActive(true); videoRoot:SetVisible(true)
+    videoRoot:SetAnchorMin(0.5, 0.5); videoRoot:SetAnchorMax(0.5, 0.5); videoRoot:SetPivot(0.5, 0.5)
+    videoRoot:SetSizeDelta(Runtime.actualVideoW, Runtime.actualVideoH)
+    videoRoot:SetAnchoredPosition(0, 0) 
+    videoRoot.raycastTarget = false
 
     local max_nums = 0
     for i = 1, #data.frames do
@@ -146,84 +256,84 @@ local function BuildPlayer()
         end
     end
 
-    local barW = winW - 120
-    local barH = 8
-    local barY = -winH / 2 + 30
+    -- 底部 UI
+    local barY = -Runtime.actualVideoH / 2 - 40
+    Runtime.barW = Runtime.actualVideoW * 0.7
 
-    local barBg = makeImage(playerArea, barW, barH, Color(80, 85, 95, 255), "BarBg")
-    if isReady(barBg) then barBg:SetAnchoredPosition(20, barY) end
+    -- 播放按钮
+    local btnSize = 40
+    local btnArea = game.InstantiateClientUIControl(T_CURSOR_AREA, playerArea)
+    btnArea:SetActive(true); btnArea:SetVisible(true)
+    btnArea:SetAnchorMin(0.5, 0.5); btnArea:SetAnchorMax(0.5, 0.5); btnArea:SetPivot(0.5, 0.5)
+    btnArea:SetSizeDelta(btnSize, btnSize)
+    btnArea:SetAnchoredPosition(-Runtime.barW / 2 - 40, barY)
+    btnArea.raycastTarget = true
 
-    Runtime.barFill = makeImage(playerArea, barW, barH, Color(0, 200, 255, 255), "BarFill")
-    if isReady(Runtime.barFill) then
-        Runtime.barFill:SetAnchoredPosition(20, barY)
-        Runtime.barFill.fillType = Enum.ImageFillType.Horizontal
-        Runtime.barFill.fillHorizontalType = Enum.ImageFillHorizontalType.Left
-        Runtime.barFill.fillAmount = 0
-    end
+    Runtime.playBtnBg = makeImage(btnArea, btnSize, btnSize, Color(90, 120, 140, 255), "Bg")
 
-    local barArea = game.InstantiateClientUIControl(T_CURSOR_AREA, playerArea)
-    if isReady(barArea) then
-        barArea:SetActive(true); barArea:SetVisible(true)
-        barArea:SetAnchorMin(0.5, 0.5); barArea:SetAnchorMax(0.5, 0.5); barArea:SetPivot(0.5, 0.5)
-        barArea:SetSizeDelta(barW, 40)
-        barArea:SetAnchoredPosition(20, barY)
-        barArea.raycastTarget = true
-        Runtime.barArea = barArea
+    Runtime.pauseIconRoot = game.InstantiateClientUIControl(T_CURSOR_AREA, btnArea)
+    Runtime.pauseIconRoot:SetActive(true); Runtime.pauseIconRoot:SetVisible(true)
+    Runtime.pauseIconRoot:SetAnchorMin(0.5, 0.5); Runtime.pauseIconRoot:SetAnchorMax(0.5, 0.5); Runtime.pauseIconRoot:SetPivot(0.5, 0.5)
+    Runtime.pauseIconRoot:SetSizeDelta(btnSize, btnSize); Runtime.pauseIconRoot.raycastTarget = false
+    local lineLeft = makeImage(Runtime.pauseIconRoot, 6, 18, Color(255, 255, 255, 255), "L"); lineLeft:SetAnchoredPosition(-6, 0)
+    local lineRight = makeImage(Runtime.pauseIconRoot, 6, 18, Color(255, 255, 255, 255), "R"); lineRight:SetAnchoredPosition(6, 0)
 
-        barArea:AddCursorEventListener(Enum.CursorEventType.CursorDown, function(e) HandleProgressClick(e, barW) end)
-        barArea:AddCursorEventListener(Enum.CursorEventType.CursorDrag, function(e) HandleProgressClick(e, barW) end)
-    end
+    Runtime.playIconRoot = game.InstantiateClientUIControl(T_CURSOR_AREA, btnArea)
+    Runtime.playIconRoot:SetActive(true); Runtime.playIconRoot:SetVisible(false)
+    Runtime.playIconRoot:SetAnchorMin(0.5, 0.5); Runtime.playIconRoot:SetAnchorMax(0.5, 0.5); Runtime.playIconRoot:SetPivot(0.5, 0.5)
+    Runtime.playIconRoot:SetSizeDelta(btnSize, btnSize); Runtime.playIconRoot.raycastTarget = false
+    local triangle = makeImage(Runtime.playIconRoot, 18, 18, Color(255, 255, 255, 255), "Tri", ASSET_TRIANGLE)
+    triangle:SetAnchoredPosition(2, 0); triangle:SetLocalRotation(0, 0, -90)
 
-    Runtime.playBtn = game.InstantiateClientUIControl(T_PLAY_BTN, playerArea)
-    if isReady(Runtime.playBtn) then
-        Runtime.playBtn:SetActive(true); Runtime.playBtn:SetVisible(true)
-        Runtime.playBtn:SetAnchorMin(0.5, 0.5); Runtime.playBtn:SetAnchorMax(0.5, 0.5); Runtime.playBtn:SetPivot(0.5, 0.5)
-        Runtime.playBtn:SetAnchoredPosition(-winW / 2 + 10, barY)
-        Runtime.playBtn.raycastTarget = true
-        
-        local children = Runtime.playBtn:GetChildren()
-        for _, child in ipairs(children) do
-            local x, y = child:GetAnchoredPosition()
-            table.insert(Runtime.btnChildrenOrigPos, {ctrl = child, x = x, y = y})
-            if child.imageColor or child.SetImage then table.insert(Runtime.btnImages, child) end
+    btnArea:AddCursorEventListener(Enum.CursorEventType.CursorEnter, function(_) Runtime.isBtnHover = true; UpdateBtnVisuals() end)
+    btnArea:AddCursorEventListener(Enum.CursorEventType.CursorExit, function(_) Runtime.isBtnHover = false; Runtime.isBtnPress = false; UpdateBtnVisuals() end)
+    btnArea:AddCursorEventListener(Enum.CursorEventType.CursorDown, function(_) Runtime.isBtnPress = true; UpdateBtnVisuals() end)
+    btnArea:AddCursorEventListener(Enum.CursorEventType.CursorUp, function(_) Runtime.isBtnPress = false; UpdateBtnVisuals() end)
+    btnArea:AddCursorEventListener(Enum.CursorEventType.CursorClick, function(_)
+        if Runtime.currentFrame >= data.total_frames then
+            Runtime.currentFrame = 1; Runtime.frameTimer = 0
+            RenderFrame(1); UpdateProgressBar(); Runtime.isPlaying = true
+        else
+            Runtime.isPlaying = not Runtime.isPlaying
         end
+        UpdateBtnVisuals()
+    end)
 
-        Runtime.playBtn:AddCursorEventListener(Enum.CursorEventType.CursorDown, function(_)
-            for _, info in ipairs(Runtime.btnChildrenOrigPos) do info.ctrl:SetAnchoredPosition(info.x, info.y - 3) end
-        end)
+    -- 进度条底槽
+    local barBg = makeImage(playerArea, Runtime.barW, 6, Color(50, 55, 65, 255), "BarBg")
+    if isReady(barBg) then barBg:SetAnchoredPosition(0, barY) end
 
-        Runtime.playBtn:AddCursorEventListener(Enum.CursorEventType.CursorUp, function(_)
-            for _, info in ipairs(Runtime.btnChildrenOrigPos) do info.ctrl:SetAnchoredPosition(info.x, info.y) end
-        end)
+    -- 进度条拖拽区
+    Runtime.barArea = game.InstantiateClientUIControl(T_CURSOR_AREA, playerArea)
+    Runtime.barArea:SetActive(true); Runtime.barArea:SetVisible(true)
+    Runtime.barArea:SetAnchorMin(0.5, 0.5); Runtime.barArea:SetAnchorMax(0.5, 0.5); Runtime.barArea:SetPivot(0.5, 0.5)
+    Runtime.barArea:SetSizeDelta(Runtime.barW, 30); Runtime.barArea:SetAnchoredPosition(0, barY); Runtime.barArea.raycastTarget = true
+    Runtime.barArea:AddCursorEventListener(Enum.CursorEventType.CursorDown, function(e) HandleProgressClick(e) end)
+    Runtime.barArea:AddCursorEventListener(Enum.CursorEventType.CursorDrag, function(e) HandleProgressClick(e) end)
 
-        Runtime.playBtn:AddCursorEventListener(Enum.CursorEventType.CursorClick, function(_)
-            if Runtime.currentFrame >= data.total_frames then
-                Runtime.currentFrame = 1
-                if isReady(Runtime.barFill) then Runtime.barFill.fillAmount = 0 end
-                RenderFrame(1)
-                Runtime.isPlaying = true
-            else
-                Runtime.isPlaying = not Runtime.isPlaying
-            end
-            
-            local targetColor = Runtime.isPlaying and Color(255, 255, 255, 255) or Color(255, 100, 100, 255)
-            for _, imgCtrl in ipairs(Runtime.btnImages) do
-                if isReady(imgCtrl) then imgCtrl.imageColor = targetColor end
-            end
-        end)
+    -- 进度条滑块
+    Runtime.thumb = makeImage(playerArea, 24, 16, Color(0, 200, 255, 255), "Thumb", ASSET_ROUND)
+    if isReady(Runtime.thumb) then
+        Runtime.thumb:SetAnchorMin(0.5, 0.5); Runtime.thumb:SetAnchorMax(0.5, 0.5); Runtime.thumb:SetPivot(0.5, 0.5)
+        Runtime.thumb:SetAnchoredPosition(0, barY)
     end
+
+    -- 🚨 调用：生成左上角结算按钮！
+    BuildExitButton(this)
+
+    UpdateProgressBar()
+    UpdateBtnVisuals()
 end
 
+-- 生命周期
 function OnInit() script:EnableUpdate(true) end
 
 function OnStart()
     this:SetActive(true); this:SetVisible(true)
-    
-    -- 【就在这里】强制显示鼠标光标
     this.showCursor = true 
     
     local ok, err = pcall(BuildPlayer)
-    if ok then RenderFrame(1) else printerr("错误: " .. tostring(err)) end
+    if ok then RenderFrame(1) else printerr("初始化失败: " .. tostring(err)) end
 end
 
 function OnUpdate(dt)
@@ -239,14 +349,10 @@ function OnUpdate(dt)
         if Runtime.currentFrame < data.total_frames then
             Runtime.currentFrame = Runtime.currentFrame + 1
             RenderFrame(Runtime.currentFrame)
-            if isReady(Runtime.barFill) then
-                Runtime.barFill.fillAmount = (Runtime.currentFrame - 1) / (data.total_frames - 1)
-            end
+            UpdateProgressBar()
         else
             Runtime.isPlaying = false
-            for _, imgCtrl in ipairs(Runtime.btnImages) do
-                if isReady(imgCtrl) then imgCtrl.imageColor = Color(255, 100, 100, 255) end
-            end
+            UpdateBtnVisuals()
         end
     end
 end
